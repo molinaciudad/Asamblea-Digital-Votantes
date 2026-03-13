@@ -860,19 +860,18 @@ function setupListeners() {
     var params = new URLSearchParams(window.location.search);
     var codeParam = params.get('code');
     if (codeParam) {
-      // Esperar a que Firebase cargue los consorcistas antes de mostrar pantalla votante
-      var _codeAttempts = 0;
-      function _tryPreloadCode() {
-        _codeAttempts++;
-        var inp = document.getElementById('voterCodeInput');
-        if (inp) {
-          inp.value = codeParam.toUpperCase();
-          showVoterFlow(true);
-        } else if (_codeAttempts < 20) {
-          setTimeout(_tryPreloadCode, 150);
-        }
-      }
-      setTimeout(_tryPreloadCode, 300);
+      setTimeout(function() {
+        // Llamar showVoterFlow normal (limpia el campo), luego sobreescribir el valor
+        showVoterFlow();
+        setTimeout(function() {
+          var inp = document.getElementById('voterCodeInput');
+          if (inp) {
+            inp.value = codeParam.toUpperCase();
+            validateVoterCodeInput(inp);
+            inp.focus();
+          }
+        }, 150);
+      }, 300);
     }
   } catch(e) {}
 }
@@ -4653,15 +4652,11 @@ function resetVoterCodeInput() {
 
 // Auto-foco al mostrar la pantalla de votante
 var _origShowVoterFlow = showVoterFlow;
-showVoterFlow = function(preserveCode) {
+showVoterFlow = function() {
   _origShowVoterFlow();
   setTimeout(function() {
     var el = document.getElementById('voterCodeInput');
-    if (el) {
-      if (!preserveCode) { el.value = ''; resetVoterCodeInput(); }
-      else { validateVoterCodeInput(el); }
-      el.focus();
-    }
+    if (el) { resetVoterCodeInput(); el.focus(); }
   }, 80);
 };
 
