@@ -576,6 +576,14 @@ input:focus,select:focus{outline:none;border-color:var(--gold)}
   <!-- CONFIG -->
   <div id="tab-config" class="tab-panel">
     <div class="card">
+      <div class="card-title">🔗 URL de la aplicación</div>
+      <p class="text-sm" style="margin-bottom:8px;">Esta dirección se usa para generar los códigos QR de acceso de los votantes.</p>
+      <label>URL base de la app</label>
+      <input type="url" id="appUrlInput" placeholder="https://tuusuario.github.io/repositorio/asamblea-digital.html" />
+      <div id="appUrlMsg" style="margin-top:6px;"></div>
+      <div class="mt-12"><button class="btn btn-primary btn-block btn-sm" onclick="saveAppUrl()">💾 Guardar URL</button></div>
+    </div>
+    <div class="card">
       <div class="card-title">⚙️ Configuración de sincronización</div>
       <div class="alert alert-info" id="fbConfigStatus">Verifique que la sincronización en tiempo real esté activa.</div>
       <p class="text-sm" style="margin-bottom:8px;">Estado de la base de datos en tiempo real:</p>
@@ -713,7 +721,8 @@ var S = {
   asambleaTipo: 'Asamblea Ordinaria',
   currentVoter: null,
   eventLog: [],       // [{ts, type, desc}]
-  listeners: []
+  listeners: [],
+  appUrl: 'https://molinaciudad.github.io/Asamblea-Digital-Votantes/asamblea-digital.html'
 };
 
 // ============================================================
@@ -783,7 +792,7 @@ function initApp() {
   }
   var dateEl = document.getElementById('asambleaDate');
   if (dateEl && !dateEl.value) dateEl.value = new Date().toISOString().slice(0,10);
-  // Setup realtime listeners
+  // Setup realtime listeners (incluye lectura de ?code= en la URL)
   setupListeners();
 }
 
@@ -837,7 +846,35 @@ function setupListeners() {
     renderVotingTab();
     if (S.currentVoter) updateVoterScreen();
   });
+  fbListen('asamblea/appUrl', function(val) {
+    if (val) {
+      S.appUrl = val;
+      var inp = document.getElementById('appUrlInput');
+      if (inp) inp.value = val;
+    }
+  });
   document.getElementById('fbStatus').innerHTML = '<span class="chip chip-green">🟢 Sincronización activa</span>';
+
+  // Leer ?code= de la URL y pre-cargar el código del votante
+  try {
+    var params = new URLSearchParams(window.location.search);
+    var codeParam = params.get('code');
+    if (codeParam) {
+      // Esperar a que Firebase cargue los consorcistas antes de mostrar pantalla votante
+      var _codeAttempts = 0;
+      function _tryPreloadCode() {
+        _codeAttempts++;
+        var inp = document.getElementById('voterCodeInput');
+        if (inp) {
+          inp.value = codeParam.toUpperCase();
+          showVoterFlow(true);
+        } else if (_codeAttempts < 20) {
+          setTimeout(_tryPreloadCode, 150);
+        }
+      }
+      setTimeout(_tryPreloadCode, 300);
+    }
+  } catch(e) {}
 }
 
 // ============================================================
@@ -971,11 +1008,56 @@ function showAdminTab(tab) {
   document.querySelectorAll('.tab')[map[tab]].classList.add('active');
   if (tab === 'votar') renderVotingTab();
   if (tab === 'resultados') renderResults();
+  if (tab === 'config') {
+    var inp = document.getElementById('appUrlInput');
+    if (inp && !inp.value) inp.value = S.appUrl || '';
+  }
 }
 
 // ============================================================
 // CONFIG / PASSWORD
 // ============================================================
+function saveAppUrl() {
+  var val = (document.getElementById('appUrlInput').value || '').trim();
+  var msg = document.getElementById('appUrlMsg');
+  if (!val) { msg.innerHTML = '<span class="chip chip-red">⚠️ Ingresá una URL válida</span>'; return; }
+  S.appUrl = val;
+  fbUpdate('asamblea', { appUrl: val })
+    .then(function() { msg.innerHTML = '<span class="chip chip-green">✅ URL guardada</span>'; setTimeout(function(){ msg.innerHTML=''; }, 3000); })
+    .catch(function() { msg.innerHTML = '<span class="chip chip-red">❌ Error al guardar</span>'; });
+}
+
+function showQrModal(consorcId) {
+  var c = S.consorcistas.filter(function(x){ return String(x.id) === String(consorcId); })[0];
+  if (!c) return;
+  var base = (S.appUrl || '').replace(/\/$/, '');
+  var url  = base + '?code=' + encodeURIComponent(c.code);
+  var nombre = (c.denom ? c.denom + ' · ' : '') + c.name;
+
+  // Generar QR via API gratuita (no requiere key)
+  var qrSrc = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' + encodeURIComponent(url);
+
+  var html =
+    '<div id="qrModal" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;" onclick="if(event.target===this)closeQrModal()">' +
+      '<div style="background:#fff;border-radius:16px;padding:24px 20px;max-width:300px;width:100%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.25);">' +
+        '<div style="font-family:\'Playfair Display\',serif;font-size:1rem;color:#0f1f3d;margin-bottom:4px;">' + nombre + '</div>' +
+        '<div style="font-size:.72rem;color:#8a8070;margin-bottom:14px;">UF ' + c.unit + ' · Código <b style="color:#0f1f3d;">' + c.code + '</b></div>' +
+        '<img src="' + qrSrc + '" alt="QR" style="width:220px;height:220px;border-radius:8px;border:1px solid #e8e4d9;" />' +
+        '<div style="font-size:.68rem;color:#8a8070;margin-top:10px;word-break:break-all;">' + url + '</div>' +
+        '<button class="btn btn-primary btn-block btn-sm" style="margin-top:14px;" onclick="closeQrModal()">✖ Cerrar</button>' +
+      '</div>' +
+    '</div>';
+
+  var wrap = document.createElement('div');
+  wrap.id = 'qrModalWrap';
+  wrap.innerHTML = html;
+  document.body.appendChild(wrap);
+}
+
+function closeQrModal() {
+  var w = document.getElementById('qrModalWrap');
+  if (w) w.remove();
+}
 function changePassword() {
   var cur = document.getElementById('pwdCurrent').value;
   var nw = document.getElementById('pwdNew').value;
@@ -1191,8 +1273,15 @@ function _doTogglePresent(id, newVal, extra) {
   if (!c) return;
   var upd = Object.assign({ present: newVal }, extra || {});
   fbUpdate('consorcistas/' + id, upd)
-    .then(function() { renderConsorcistaList(); renderVotingTab(); })
-    .catch(function() { c.present = newVal; if (extra && extra.status !== undefined) c.status = extra.status; renderConsorcistaList(); renderVotingTab(); });
+    .then(function() {
+      renderConsorcistaList(); renderVotingTab();
+      if (newVal === true) showQrModal(id);
+    })
+    .catch(function() {
+      c.present = newVal; if (extra && extra.status !== undefined) c.status = extra.status;
+      renderConsorcistaList(); renderVotingTab();
+      if (newVal === true) showQrModal(id);
+    });
 }
 
 // Marca a un consorcista como RETIRADO (dejó la asamblea antes de que terminen las votaciones)
@@ -4564,11 +4653,15 @@ function resetVoterCodeInput() {
 
 // Auto-foco al mostrar la pantalla de votante
 var _origShowVoterFlow = showVoterFlow;
-showVoterFlow = function() {
+showVoterFlow = function(preserveCode) {
   _origShowVoterFlow();
   setTimeout(function() {
     var el = document.getElementById('voterCodeInput');
-    if (el) { el.value = ''; resetVoterCodeInput(); el.focus(); }
+    if (el) {
+      if (!preserveCode) { el.value = ''; resetVoterCodeInput(); }
+      else { validateVoterCodeInput(el); }
+      el.focus();
+    }
   }, 80);
 };
 
